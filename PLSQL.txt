@@ -1,0 +1,232 @@
+--avand ca parametru un nume de producator sa se afiseze 
+--pentru fiecare tip de inghetata aferent acestuia 
+--numarul de vanzari pentru luna ianuarie
+create or replace type t1 as varray(50) of varchar(64);
+/
+
+create or replace procedure p1 (
+    nume_producator in ice_cream.supplier_name%type
+) as
+array_inghetate t1 := t1();
+i number;
+nb_of_orders number;
+begin
+    select distinct ICE_CREAM_DESCRIPTION bulk collect into array_inghetate
+    from ice_cream join ice_cream_descriptions using(ice_cream_id)
+    where supplier_name = nume_producator;
+    
+    for i in array_inghetate.first..array_inghetate.last loop
+        dbms_output.put_line('Pentru inghetata ' || array_inghetate(i));
+        select count(distinct order_id) into nb_of_orders
+        from orders
+        where ice_cream_id in (select ice_cream_id 
+                               from ice_cream_descriptions 
+                               where ice_cream_description= array_inghetate(i))
+               and extract(month from PURCHASE_DATE) = 1;
+        dbms_output.put_line('avem ' || nb_of_orders || ' comenzi in luna ianuarie');
+           
+    end loop;
+end;
+/
+
+begin 
+p1('ALPIN');
+end;
+/
+
+---pentru fiecare tip de inghetata, afisati detalii despre clientii ce au achizitionat-o,
+---numarul comenzii,iar in cadrul ficarei comenzi, numele toppingurilor alese pentru respectiva comanda
+
+create or replace type t2 as varray(50) of number;
+/
+create or replace procedure p2 
+as
+cursor c is select distinct ice_cream_id, ice_cream_description
+            from ice_cream_descriptions;
+j number;
+toppings_string varchar(128);
+array_orders t2:= t2();
+id number;
+descr varchar(64);
+begin
+     for i in c loop
+        id:= i.ice_cream_id;
+        descr := i.ice_cream_description;
+        dbms_output.put_line('Pentru inghetata ' || descr || ':');
+        select order_id bulk collect into array_orders
+        from orders
+        where ice_cream_id = id;
+        for j in array_orders.first..array_orders.last loop
+            select listagg(topping_name, ',') into toppings_string
+            from toppings join order_toppings using(topping_id)
+            where order_id = array_orders(j);
+            if toppings_string is null then
+                dbms_output.put_line('Pentru comanda ' || array_orders(j)||' nu s-au comandat toppinguri');
+            else
+                dbms_output.put_line('Pentru comanda ' || array_orders(j)||' s-au folosit toppingurile - ' || toppings_string);
+            end if;
+        end loop;
+     end loop;
+end;
+/
+begin 
+p2();
+end;
+/
+
+----calculul mediei numarului de comenzi/zi pentru un angajat
+create or replace function f1 (angajat employees.employee_first_name%type) 
+return decimal
+is
+    nr number;
+    order_nr number;
+    nr2 number;
+    ex number;
+    nu_exista exception;
+
+begin
+    select count(*) into nr2 from orders;
+    select count(*) into ex from employees where employee_first_name=angajat;
+    if nr2 = 0 then
+        raise no_data_found;
+    end if;
+    if ex = 0 then
+        raise nu_exista;
+    end if;
+    --cate zile diferite
+    select count(distinct PURCHASE_DATE) into nr
+    from employees join customers using(employee_id)
+                   join orders using(customer_id)
+    where employee_first_name = angajat;
+
+    select count(distinct ORDER_ID) into order_nr
+    from employees join customers using(employee_id)
+                   join orders using(customer_id)
+    where employee_first_name = angajat;
+
+
+
+    return order_nr/nr;
+    exception 
+          when no_data_found then 
+            insert into SYSTEM_LOGS values (mesaj_id.NEXTVAL, 'Nu s-au gasit date in tabelul de comenzi', 'W', 'Alex', current_date);
+            commit;
+            raise_application_error(-20001,'Nu sunt date');   
+         when nu_exista then 
+            insert into SYSTEM_LOGS values (mesaj_id.NEXTVAL, 'Anagajatul '||angajat||' nu exista!', 'E', 'Alex', current_date);
+            commit;
+            raise_application_error(-20003,'Nu exista angajatul');  
+          when ZERO_DIVIDE then 
+            insert into SYSTEM_LOGS values (mesaj_id.NEXTVAL, 'Anagajatul '||angajat|| ' nu a facut nicio vanzare', 'W', 'Alex', current_date);
+            commit;
+            raise_application_error(-20001,'Acest anagajat nu a facut nicio vanzare');           
+          when others then
+            insert into SYSTEM_LOGS values (mesaj_id.NEXTVAL, 'Au aparut erori neidentificate in timpul executiei f1', 'E', 'Alex', current_date);
+            commit;
+            raise_application_error(-20002,'Altele');
+
+end;
+/
+begin
+dbms_output.put_line(f1('Daniel'));
+end;
+/
+
+select * from SYSTEM_LOGS;
+
+
+--trigger LMD comanda (doar adminul poate insera/updata date in suppliers)
+create or replace trigger edit_suppliers
+before insert or update on suppliers
+declare
+   a varchar(100);
+begin
+     select sys.login_user into a from dual;
+     if a <> 'ADMIN'
+     then
+        RAISE_APPLICATION_ERROR(-20000,'Doar adminul poate insera/updata date in tabelul suppliers. Userul curent este '|| a);
+     end if;
+end;
+/
+insert into suppliers values ('supplier nou2', '1234');
+
+
+
+--trigger calculare total_payment (LMD linie)
+create or replace trigger trigger_calculate_total
+    before insert or update on orders 
+    for each row
+declare
+price decimal;
+toppings decimal;
+a number;
+begin 
+    if :NEW.ICE_CREAM_ID is null or :NEW.FLAVOUR_ID is null then
+        RAISE_APPLICATION_ERROR(-20001, 'Nu puteti insera o comanda fara inghetata');
+    elsif :NEW.ORDER_QTY is null or :NEW.ORDER_QTY = 0 then
+        RAISE_APPLICATION_ERROR(-20001, 'Nu puteti insera o comanda fara a specifica cantitatea!');
+    else
+        select count(ICE_CREAM_ID) into a
+        from ice_cream
+        where :NEW.ICE_CREAM_ID = ICE_CREAM_ID and :NEW.FLAVOUR_ID = FLAVOUR_ID;
+        if a = 0 then
+             RAISE_APPLICATION_ERROR(-20001, 'Nu puteti insera o combinatie de inghetata-aroma care nu exista!');
+        else          
+            dbms_output.put_line('1');
+            select PRICE * :NEW.ORDER_QTY into price 
+            from ICE_CREAM_DESCRIPTIONS
+            where ICE_CREAM_ID = :NEW.ICE_CREAM_ID;
+            
+            dbms_output.put_line('2');
+            
+            select count(topping_id) into a
+            from order_toppings 
+            where ORDER_ID = :NEW.ORDER_ID;
+            
+            if a = 0 then
+                :NEW.TOTAL_PAYMENT := price;
+            else
+                select sum(TOPPING_PRICE * :NEW.ORDER_QTY) into toppings
+                from order_toppings join toppings using(topping_id)
+                where ORDER_ID = :NEW.ORDER_ID
+                group by ORDER_ID;
+                
+                :NEW.TOTAL_PAYMENT := price + toppings;
+            end if;
+        end if;
+     end if;        
+end;
+/
+
+insert into ORDERS (ORDER_ID, ORDER_QTY, PURCHASE_DATE, CUSTOMER_ID, ICE_CREAM_ID, FLAVOUR_ID) values (14, 2, to_timestamp('2021-01-01 13:02:05', 'YYYY-MM-DD HH24:MI:SS.FF'), 1, 2, 6);
+insert into ORDERS (ORDER_ID, ORDER_QTY, PURCHASE_DATE, CUSTOMER_ID, ICE_CREAM_ID, FLAVOUR_ID) values (15, 2, to_timestamp('2021-01-01 13:02:05', 'YYYY-MM-DD HH24:MI:SS.FF'), 1, 2, 14);
+
+
+--trigger LDD (niciun tabel din baza noastra de date nu poate fi sters decat de ADMIN)
+create or replace trigger audit_schema
+   before drop on database
+declare
+a varchar(64);
+begin
+     select sys.login_user into a from dual;
+     if a <> 'BUSINESS_ADMINISTRATOR'
+     then
+        RAISE_APPLICATION_ERROR(-20000,'Doar userul BUSINESS_ADMINISTRATOR poate sterge tabele din baza de date!');
+     end if;
+end;
+/
+
+create table a (
+a varchar(64)
+);
+drop table a;
+
+
+
+
+
+
+
+
+
+

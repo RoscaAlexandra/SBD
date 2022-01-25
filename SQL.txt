@@ -1,0 +1,200 @@
+--1)Afisarea detaiilor clientului cu cele mai multe toppinguri pe o comanda
+select CUSTOMER_ID, CUSTOMER_NAME, CUSTOMER_PHONE, count(TOPPING_ID) as number_of_toppings
+from CUSTOMERS join ORDERS o using (CUSTOMER_ID)
+                   join ORDER_TOPPINGS ot on (o.ORDER_ID = ot.ORDER_ID)  
+having count(TOPPING_ID) = (
+            select max(number_of_toppings)
+            from
+            (
+                select CUSTOMER_ID, count(TOPPING_ID) as number_of_toppings
+                from CUSTOMERS join ORDERS o using (CUSTOMER_ID)
+                               join ORDER_TOPPINGS ot on (o.ORDER_ID = ot.ORDER_ID)   
+                group by CUSTOMER_ID
+            )
+        )
+group by CUSTOMER_ID, CUSTOMER_NAME, CUSTOMER_PHONE;
+
+--2)Afisarea angajatilor care nu au facut nicio vanzare in luna ianuarie
+select distinct EMPLOYEE_ID, EMPLOYEE_FIRST_NAME, EMPLOYEE_LAST_NAME
+from EMPLOYEES e left join CUSTOMERS c using (EMPLOYEE_ID)
+                 left join ORDERS o on(o.CUSTOMER_ID = c.CUSTOMER_ID and extract(month from PURCHASE_DATE) = 1)
+where o.CUSTOMER_ID is null;
+
+--3)Sa se afiseze primele 5 cele mai cumparate arome de inghetata
+select f.FLAVOUR_ID, f.FLAVOUR_DESCRIPTION, count(distinct ORDER_ID)
+from ice_cream_flavours f join ice_cream i on(i.FLAVOUR_ID = f.FLAVOUR_ID)
+                          join orders o on (o.ICE_CREAM_ID = i.ICE_CREAM_ID and i.FLAVOUR_ID = o.FLAVOUR_ID)
+group by f.FLAVOUR_ID, f.FLAVOUR_DESCRIPTION
+order by count(distinct ORDER_ID) desc
+offset 0 rows
+fetch next 5 rows only;
+
+--4)Sa se afiseze descrierile si preturile inghetatelor care au toate aromele disponibile (DIVISION)
+select distinct i.ICE_CREAM_ID, ICE_CREAM_DESCRIPTION, PRICE
+from ICE_CREAM i join ICE_CREAM_DESCRIPTIONS d on (i.ICE_CREAM_ID = d.ICE_CREAM_ID)
+where not exists (
+ (select flavour_id from ice_cream_flavours)
+  minus
+ (select flavour_id f from ICE_CREAM ii where ii.ICE_CREAM_ID = i.ICE_CREAM_ID) 
+ );      
+ 
+--5)Sa se afiseze initialele tuturor angajatilor ce au facut vanzari de inghetata aprovizonata de
+--producatorul a carui nume incepe cu litera 'E'
+select substr(EMPLOYEE_FIRST_NAME, 1,1) || '.' || substr(EMPLOYEE_LAST_NAME, 1,1) || '.' as INITIALE_ANGAJAT
+from employees e join customers c using (EMPLOYEE_ID)
+                 join orders o using(CUSTOMER_ID)
+                 join ice_cream i on(i.ICE_CREAM_ID = o.ICE_CREAM_ID and i.FLAVOUR_ID = o.FLAVOUR_ID)
+                 join suppliers s using(SUPPLIER_NAME)
+where lower(SUPPLIER_NAME) like 'e%';
+
+--6)In functie de vanzarile totale ale angajatilor, acestia pot primi un bonus la sfarsitul anului (raportat la salariu). 
+--Daca acestia au avut sub 2 vanzari, vor primi 5%, pentru 3 vanzari vor primi 10%, iar peste 4, 15%.
+--Afisati lista tuturor angajatilor si al viitoarelor bonusuri.
+select employee_id, employee_first_name, count(order_id) nr_de_comenzi,
+       case when count(order_id) between 1 and 2 then 5/100 * employee_salary
+            when count(order_id) = 3 then 10/100 * employee_salary
+            when count(order_id) >= 4 then 15/100 * employee_salary
+            else 0
+       end as bonus
+from employees left join customers using(employee_id)
+               left join orders using(customer_id)
+group by employee_id, employee_salary, employee_first_name;
+
+--7)Afisati media toppingurilor pentru comenzile facute de Edi
+select avg (nr_toppinguri) as media_topping_per_comanda
+from (
+    select order_id, count(topping_id) as nr_toppinguri
+    from order_toppings ot right join orders o using (order_id)
+    where customer_id = (select customer_id from customers where customer_name = 'Edi')
+    group by order_id
+);
+
+--8)Customerii care au facut comenzi de inghetata cu aroma de banane, vor avea timp de o luna de la momentul 
+--actaual reducere de 3% la inghetatele care dispun de aroma 'Blueberry'.
+--Afisati customerii, inghetatele la care vor avea reducere, pretul vechi, pretul redus si valabilitatea ofertei
+select CUSTOMER_ID, CUSTOMER_NAME, (
+    select LISTAGG(ICE_CREAM_DESCRIPTION, '|')
+    from ICE_CREAM_FLAVOURS f join ICE_CREAM i using(FLAVOUR_ID)
+                              join ICE_CREAM_DESCRIPTIONS d using (ICE_CREAM_ID)
+    where FLAVOUR_DESCRIPTION = 'Blueberry'
+) as lista_inghetate,
+(
+    select LISTAGG(PRICE, '|')
+    from ICE_CREAM_FLAVOURS f join ICE_CREAM i using(FLAVOUR_ID)
+                              join ICE_CREAM_DESCRIPTIONS d using (ICE_CREAM_ID)
+    where FLAVOUR_DESCRIPTION = 'Blueberry'
+) as lista_preturi_vechi,
+(
+    select LISTAGG(to_char(PRICE - 3/100*PRICE), '|')
+    from ICE_CREAM_FLAVOURS f join ICE_CREAM i using(FLAVOUR_ID)
+                              join ICE_CREAM_DESCRIPTIONS d using (ICE_CREAM_ID)
+    where FLAVOUR_DESCRIPTION = 'Blueberry'
+) as lista_preturi_noi,
+CURRENT_DATE as INCEPUT_PROMOTIE,
+ADD_MONTHS(CURRENT_DATE, 1) as SFARSIT_PROMOTIE
+from (
+    select distinct customer_id, CUSTOMER_NAME
+    from ICE_CREAM_FLAVOURS  join ice_cream using(FLAVOUR_ID)
+                             join orders using(ICE_CREAM_ID)
+                             join customers using(CUSTOMER_ID)
+    where lower(FLAVOUR_DESCRIPTION) = 'banana' 
+);
+
+--9)Afisati veniturile din vanzari pe luna ianuarie, totalul salariilor si profitul ramas
+select VENIT_TOTAL_IANUARIE,
+       (select sum(EMPLOYEE_SALARY) as sal from employees) as CHELTUIELI_SALARIALE, 
+       VENIT_TOTAL_IANUARIE - (select sum(EMPLOYEE_SALARY) as sal from employees) as PROFIT
+from (
+    select sum(PRICE * ORDER_QTY + TOPPING_PRICE * ORDER_QTY) VENIT_TOTAL_IANUARIE
+    from orders o join ice_cream i using (ICE_CREAM_ID, FLAVOUR_ID)
+                  join ice_cream_descriptions using (ICE_CREAM_ID)
+                  join order_toppings t using (ORDER_ID)
+                  join toppings using (TOPPING_ID)
+    where extract(month from purchase_date) = 1
+);
+   
+--10)Afisati toti clientii care au dat comanda de inghetate cu aroma de vanilie si sunt clientii lui Daniel
+select customer_id, customer_name
+from employees join customers using(employee_id)
+               join orders using (customer_id)
+               join ice_cream using (ice_cream_id, flavour_id)
+               join ice_cream_flavours using(flavour_id)
+where flavour_description='Vanilla'
+intersect
+select customer_id, customer_name
+from customers join employees using(employee_id)
+where employee_first_name='Daniel';
+
+--11)Clientii ce au achizitionat produse distribuite de 'TOP-GEL' vor primi din partea casei o inghetata 
+--Magnum. Pentru revendicarea premiului, este necesara contactarea acestora prin intermediul telefonului.
+--In cazul in care acestia nu au numarul de telefon in baza nostra de date, angajatii corespunzatori acestora vor fi 
+--contactati prin intermediul unui email. Afisati datele de contact ale fericitilor castigatori.
+select customer_id, nvl(customer_phone, employee_email)
+from customers join employees using(employee_id)
+where customer_id in (select distinct customer_id
+                      from orders join ice_cream using(ice_cream_id, flavour_id)
+                                  join suppliers using(supplier_name)
+                      where supplier_name = 'TOP-GEL');
+
+--12)Afisati luna cu cele mai putine vanzari din 2021
+with aux as (
+select sum(PRICE * ORDER_QTY + TOPPING_PRICE * ORDER_QTY) VENIT_TOTAL_PER_LUNA, extract (month from PURCHASE_DATE) LUNA
+from orders o join ice_cream i using (ICE_CREAM_ID, FLAVOUR_ID)
+              join ice_cream_descriptions using (ICE_CREAM_ID)
+              join order_toppings t using (ORDER_ID)
+              join toppings using (TOPPING_ID)
+where extract (year from PURCHASE_DATE) = 2021
+group by extract (month from PURCHASE_DATE)
+)
+select LUNA
+from aux
+where VENIT_TOTAL_PER_LUNA =(select min(VENIT_TOTAL_PER_LUNA) from aux);
+
+--13)Afisati toate tipurile de inghetata comandate de Mircea si cele cumparate de un client al lui Vasile.
+select distinct ICE_CREAM_DESCRIPTION 
+from ICE_CREAM_DESCRIPTIONS join ICE_CREAM using(ICE_CREAM_ID)
+                            join ORDERS using (ICE_CREAM_ID, FLAVOUR_ID)
+                            join CUSTOMERS using (CUSTOMER_ID)
+where CUSTOMER_NAME = 'Mircea'
+union
+select distinct ICE_CREAM_DESCRIPTION 
+from ICE_CREAM_DESCRIPTIONS join ICE_CREAM using(ICE_CREAM_ID)
+                            join ORDERS using (ICE_CREAM_ID, FLAVOUR_ID)
+                            join CUSTOMERS using (CUSTOMER_ID)
+                            join EMPLOYEES using(EMPLOYEE_ID)
+where employee_first_name = 'Vasile';
+
+--14)Angajatul anului 2021 este considerat cel care a adus cele mai multe vanzari magazinului.
+--Afisati vanzarile tuturor angajatilor in anul 2021.
+select sum(coalesce(PRICE * ORDER_QTY + TOPPING_PRICE * ORDER_QTY, 0)) productie, employee_id, employee_first_name
+from employees left join customers using(employee_id)
+              left join orders o using (CUSTOMER_ID)
+              left join ice_cream i using (ICE_CREAM_ID, FLAVOUR_ID)
+              left join ice_cream_descriptions using (ICE_CREAM_ID)
+              left join order_toppings t using (ORDER_ID)
+              left join toppings using (TOPPING_ID) 
+where extract(year from PURCHASE_DATE) = 2021 or extract(year from PURCHASE_DATE) is null
+group by employee_id, employee_first_name;
+
+--15)'BETTY-ICE' prezinta o oferta catre magazinul nostru, la 100 de inghetate cumparate spre distributie, primim 3 gratuite.
+--Pentru a afla daca merita sa cumparam 100 de astfel de inghetate, vom calcula daca acest distribuitor se afla printre
+--primii 3 cu cele mai multe comenzi la noi in magazin.
+select supplier_name, 
+       case when exists 
+                (select supplier_name
+                 from
+                    ( 
+                        select count(distinct order_id), supplier_name
+                        from suppliers join ice_cream using (supplier_name)
+                                       join orders using (ice_cream_id, flavour_id)
+                        group by supplier_name
+                        order by count(distinct order_id) desc
+                        offset 0 rows
+                        fetch next 3 rows only
+                    )
+                  where s.supplier_name = supplier_name
+                )then 'Da, merita!'
+            else 'Nu, nu merita!'
+        end as calc
+from suppliers s
+where supplier_name = 'BETTY ICE';
